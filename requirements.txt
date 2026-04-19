@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+beautifulsoup4
+reportlab
+pydantic
+playwright
+sentence-transformers
+torch
