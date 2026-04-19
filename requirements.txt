@@ -2,8 +2,5 @@ fastapi
 uvicorn
 requests
 beautifulsoup4
-reportlab
+lxml
 pydantic
-playwright
-sentence-transformers
-torch
