@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import re
 
 # Structured Detection Matrix: Weights and Dense Synonym Mapping
@@ -68,35 +68,106 @@ COMPILED_CHECKS = {
     for key, data in COMPLIANCE_CHECKS.items()
 }
 
-def find_privacy_link(base_url: str, headers: dict) -> str:
-    """Intelligently explores the homepage to find the true privacy policy URL."""
-    common_paths = [
-        "/privacy", "/privacy-policy", "/privacy-notice", "/privacy-statement",
-        "/legal/privacy", "/policies/privacy", "/privacypolicy", "/legal"
+def score_page_content(soup: BeautifulSoup, text: str) -> int:
+    """Scores a candidate page based on heuristics simulating privacy context."""
+    score = 0
+    
+    # 1. Structural Signals
+    if len(text) > 1000:
+        score += 20
+    if len(soup.find_all("p")) > 3:
+        score += 10
+        
+    lower_text = text.lower()
+    
+    # 2. Heuristic Content Scoring
+    concept_groups = [
+        ["collect", "information", "data"],                 # Data collection
+        ["access", "delete", "request"],                    # User rights
+        ["cookie", "tracking"],                             # Cookies
+        ["third party", "partners", "share"]                # Data Sharing
     ]
     
-    for path in common_paths:
+    for concept_list in concept_groups:
+        if any(keyword in lower_text for keyword in concept_list):
+            score += 15
+            
+    return score
+
+def find_privacy_link(base_url: str, headers: dict) -> str:
+    """Intelligently discovers the privacy policy URL without relying on hardcoded paths."""
+    try:
+        response = requests.get(base_url, headers=headers, timeout=8)
+        if response.status_code != 200:
+            return None
+    except:
+        return None
+
+    soup = BeautifulSoup(response.text, "lxml" if "lxml" in str(BeautifulSoup) else "html.parser")
+    base_domain = urlparse(base_url).netloc
+    
+    candidate_links = set()
+    irrelevant_keywords = ["login", "signup", "register", "cart", "checkout", "auth"]
+    priority_keywords = ["privacy", "legal", "terms", "policy"]
+    
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        full_url = urljoin(base_url, href)
+        parsed_url = urlparse(full_url)
+        
+        # Keep only internal links (same domain)
+        if parsed_url.netloc != base_domain:
+            continue
+            
+        lower_path = parsed_url.path.lower()
+        
+        # Ignore irrelevant endpoints
+        if any(irr in lower_path for irr in irrelevant_keywords):
+            continue
+            
+        candidate_links.add(full_url)
+
+    # Sort links to prioritize ones containing legal/privacy terminology directly in URL, max 15
+    sorted_candidates = sorted(
+        list(candidate_links), 
+        key=lambda x: -1 if any(p in x.lower() for p in priority_keywords) else 0
+    )[:15]
+
+    best_candidate = None
+    highest_score = -1
+    
+    for candidate_url in sorted_candidates:
         try:
-            url = urljoin(base_url, path)
-            req = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
-            if req.status_code == 200:
-                return url
+            req = requests.get(candidate_url, headers=headers, timeout=3)
+            if req.status_code != 200:
+                continue
+                
+            candidate_soup = BeautifulSoup(req.text, "lxml" if "lxml" in str(BeautifulSoup) else "html.parser")
+            
+            # Clean scripts and styles to avoid invisible textual noise
+            for script in candidate_soup(["script", "style", "nav", "footer", "header"]):
+                script.extract()
+                
+            candidate_text = candidate_soup.get_text(separator=" ", strip=True)
+            
+            score = score_page_content(candidate_soup, candidate_text)
+            
+            # Additional heuristic: If the URL explicitly screams privacy, give a tie-breaker bonus
+            if "privacy" in candidate_url.lower():
+                score += 30
+                
+            if score > highest_score:
+                highest_score = score
+                best_candidate = candidate_url
+                
         except:
             continue
             
-    try:
-        response = requests.get(base_url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "lxml" if "lxml" in str(BeautifulSoup) else "html.parser")
-            for link in soup.find_all("a", href=True):
-                href = link["href"].lower()
-                text = link.get_text().lower()
-                if "privacy" in href or "privacy" in text or "policy" in href or "legal" in href:
-                    return urljoin(base_url, link["href"])
-    except:
-        pass
+    # Failsafe: Return None instead of crashing or returning a terrible match
+    if highest_score < 30:
+        return None
         
-    return None
+    return best_candidate
 
 def split_into_chunks(text: str, chunk_size: int = 150) -> list:
     """Splits raw text into sliding window word chunks."""
