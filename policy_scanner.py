@@ -115,8 +115,11 @@ def find_privacy_link(base_url: str, headers: dict) -> str:
         full_url = urljoin(base_url, href)
         parsed_url = urlparse(full_url)
         
-        # Keep only internal links (same domain)
-        if parsed_url.netloc != base_domain:
+        # Keep only internal links (same domain), stripping www. to allow matching
+        base_domain_stripped = base_domain.replace("www.", "")
+        link_domain_stripped = parsed_url.netloc.replace("www.", "")
+        
+        if base_domain_stripped != link_domain_stripped:
             continue
             
         lower_path = parsed_url.path.lower()
