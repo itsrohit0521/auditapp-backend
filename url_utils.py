@@ -60,16 +60,16 @@ def validate_and_resolve_url(url: str, timeout: int = 5) -> str:
     for variant in variants_to_try:
         try:
             # We use GET with stream=True to act as a fast HEAD replacement,
-            # because some servers block HEAD requests.
-            response = requests.get(variant, headers=headers, timeout=timeout, stream=True, allow_redirects=True)
-            if response.status_code < 400 or response.status_code in [401, 403]:
-                # If we get a 200 OK, or even a 401/403 (meaning the server exists and replied), we consider it resolved
-                # Return the final redirected URL (which handles auto-redirects done by the site)
-                final_url = response.url
-                # Clean trailing slash to maintain consistency
-                if final_url.endswith('/'):
-                    final_url = final_url[:-1]
-                return final_url
+            # because some servers block HEAD requests. Always use 'with' to clean up streams and prevent connection leaks.
+            with requests.get(variant, headers=headers, timeout=timeout, stream=True, allow_redirects=True) as response:
+                if response.status_code < 400 or response.status_code in [401, 403]:
+                    # If we get a 200 OK, or even a 401/403 (meaning the server exists and replied), we consider it resolved
+                    # Return the final redirected URL (which handles auto-redirects done by the site)
+                    final_url = response.url
+                    # Clean trailing slash to maintain consistency
+                    if final_url.endswith('/'):
+                        final_url = final_url[:-1]
+                    return final_url
         except Exception as e:
             last_error = e
             continue

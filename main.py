@@ -163,6 +163,11 @@ def scan_website(data: WebsiteScanRequest):
         "metadata": metadata
     }
 
+    # Ensure cache doesn't grow indefinitely across sessions to prevent out-of-memory errors
+    if len(SCAN_CACHE) > 500:
+        # In Python 3.7+, standard dicts maintain insertion order. We pop the first inserted (oldest).
+        SCAN_CACHE.pop(next(iter(SCAN_CACHE)))
+
     SCAN_CACHE[cache_key] = result_data
 
     return result_data
@@ -177,6 +182,17 @@ def self_assessment(data: SelfAssessmentRequest):
 
     framework = data.framework
     answers = data.answers
+
+    if framework not in FRAMEWORKS:
+        return {
+            "error": "Framework not found",
+            "total_risk": 0,
+            "risk_percentage": 0,
+            "compliance_score": 0,
+            "risk_level": "UNKNOWN",
+            "details": [],
+            "metadata": {}
+        }
 
     controls = FRAMEWORKS[framework]
 

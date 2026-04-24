@@ -160,6 +160,10 @@ def find_privacy_link(base_url: str, headers: dict) -> str:
                 highest_score = score
                 best_candidate = candidate_url
                 
+            # Early break optimization: If we find a highly confident candidate, stop scanning to prevent 504 Timeouts
+            if highest_score >= 60:
+                break
+                
         except:
             continue
             
