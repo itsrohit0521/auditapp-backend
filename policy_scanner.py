@@ -3,31 +3,47 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
 
+# Single Page App heuristics and bypass
+JINA_BASE_URL = "https://r.jina.ai/"
+SPA_SIGNALS = [
+    r'<div id=["\']root["\']>',
+    r'<div id=["\']app["\']>',
+    r'data-reactroot',
+    r'__NEXT_DATA__',
+]
+
+def is_spa(html_text: str) -> bool:
+    for pattern in SPA_SIGNALS:
+        if re.search(pattern, html_text, re.IGNORECASE):
+            return True
+    return False
+
 # Structured Detection Matrix: Weights and Dense Synonym Mapping
 # This simulates the semantic capability natively without downloading ~1GB of ML layers.
 COMPLIANCE_CHECKS = {
     "Cookie Consent": {
         "weight": 15,
         "keywords": [
-            r"cookie consent", r"opt[- ]?in", r"tracking technolog(?:y|ies)", 
+            r"cookie.*consent", r"opt[- ]?in", r"tracking technolog(?:y|ies)", 
             r"manage cookies", r"cookie preference", r"strictly necessary cookies",
-            r"accept cookies", r"consent banner"
+            r"accept cookies", r"consent banner", r"web beacons", r"pixel tags", r"local storage"
         ]
     },
     "Data Retention": {
         "weight": 10,
         "keywords": [
-            r"data retention", r"retain(?: your)? data", r"storage period", 
-            r"how long we keep", r"retention period", r"store(?: your)? information",
-            r"kept for as long as"
+            r"data retention", r"retain(?: your)? (?:data|information)", r"storage period", 
+            r"how long we (?:keep|retain)", r"retention period", r"store(?: your)? information",
+            r"criteria used to determine", r"kept for as long as", r"delete.*no longer needed"
         ]
     },
     "User Rights": {
         "weight": 15,
         "keywords": [
-            r"your rights", r"data subject rights", r"right to access", 
-            r"right to be forgotten", r"delete(?: your)? data", r"erase(?: your)? data",
-            r"request data deletion", r"remove(?: your)? information", r"withdraw consent"
+            r"your rights", r"your choices", r"data subject rights", r"right to access", 
+            r"right to be forgotten", r"delete(?: your)? (?:data|information)", r"erase(?: your)? (?:data|information)",
+            r"request data deletion", r"remove(?: your)? information", r"withdraw consent",
+            r"access, correct", r"manage your privacy", r"portability", r"restrict processing", r"opt[- ]?out"
         ]
     },
     "Breach Notification": {
@@ -35,29 +51,29 @@ COMPLIANCE_CHECKS = {
         "keywords": [
             r"data breach", r"breach notification", r"security incident", 
             r"unauthorized access", r"notify authorities", r"incident response",
-            r"leak", r"compromised"
+            r"leak", r"compromised", r"safeguards", r"protect(?: your)? (?:data|information|personal)", r"security measures"
         ]
     },
     "Data Sharing": {
         "weight": 15,
         "keywords": [
             r"third party", r"third parties", r"service provider", 
-            r"data sharing", r"disclose(?: your)? information", r"sell(?: your)? data",
-            r"share(?: your)? data"
+            r"data sharing", r"disclose(?: your)? information", r"sell(?: your)? (?:data|information)",
+            r"share(?: your)? (?:data|information)", r"affiliates", r"when we share", r"how we share"
         ]
     },
     "Contact Information": {
         "weight": 10,
         "keywords": [
             r"contact us", r"contact information", r"privacy officer", 
-            r"dpo", r"data protection officer", r"get in touch", r"email us at"
+            r"dpo", r"data protection officer", r"get in touch", r"email us at", r"how to contact", r"questions about this policy"
         ]
     },
     "Policy Updates": {
         "weight": 5,
         "keywords": [
             r"changes to this policy", r"we may update", r"updates to our privacy",
-            r"modify this policy", r"updated from time to time", r"effective date"
+            r"modify this policy", r"updated from time to time", r"effective date", r"last updated", r"revision date", r"material changes"
         ]
     }
 }
@@ -119,21 +135,34 @@ def find_privacy_link(base_url: str, headers: dict) -> str:
         base_domain_stripped = base_domain.replace("www.", "")
         link_domain_stripped = parsed_url.netloc.replace("www.", "")
         
-        if base_domain_stripped != link_domain_stripped:
+        if not link_domain_stripped.endswith(base_domain_stripped) and not base_domain_stripped.endswith(link_domain_stripped):
             continue
             
         lower_path = parsed_url.path.lower()
         
-        # Ignore irrelevant endpoints
         if any(irr in lower_path for irr in irrelevant_keywords):
             continue
             
         candidate_links.add(full_url)
 
+    # If SPA or no links found, rely on Jina Reader API to get markdown-rendered content and extract links
+    if not candidate_links or is_spa(response.text):
+        try:
+            jina_resp = requests.get(f"{JINA_BASE_URL}{base_url}", headers={"User-Agent": "Mozilla/5.0", "Accept": "text/plain"}, timeout=15)
+            if jina_resp.status_code == 200:
+                # Capture standard markdown links like [Privacy Center](https://www.spotify.com/legal/privacy-policy/)
+                matches = re.findall(r'\[([^\]]+)\]\((https?://[^\)]+)\)', jina_resp.text)
+                for link_text, href in matches:
+                    text_lower = link_text.lower()
+                    if "privacy" in text_lower or "policy" in text_lower or "legal" in text_lower or "terms" in text_lower:
+                        candidate_links.add(href)
+        except Exception:
+            pass
+
     # Sort links to prioritize ones containing legal/privacy terminology directly in URL, max 15
     sorted_candidates = sorted(
         list(candidate_links), 
-        key=lambda x: -1 if any(p in x.lower() for p in priority_keywords) else 0
+        key=lambda x: -2 if "privacy" in x.lower() else (-1 if any(p in x.lower() for p in priority_keywords) else 0)
     )[:15]
 
     best_candidate = None
@@ -155,23 +184,53 @@ def find_privacy_link(base_url: str, headers: dict) -> str:
             
             score = score_page_content(candidate_soup, candidate_text)
             
-            # Additional heuristic: If the URL explicitly screams privacy, give a tie-breaker bonus
-            if "privacy" in candidate_url.lower():
-                score += 30
+            # Additional heuristic: Intelligent URL-path scoring
+            lower_url = candidate_url.lower()
+            if "/privacy" in lower_url and not "choices" in lower_url:
+                score += 100
+            elif "privacy" in lower_url:
+                score += 50
+            elif any(p in lower_url for p in priority_keywords):
+                score += 20
                 
             if score > highest_score:
                 highest_score = score
                 best_candidate = candidate_url
                 
-            # Early break optimization: If we find a highly confident candidate, stop scanning to prevent 504 Timeouts
-            if highest_score >= 60:
+            # Early break optimization: If we find a highly confident candidate, stop scanning
+            if highest_score >= 120:
                 break
                 
         except:
             continue
             
-    # Failsafe: Return None instead of crashing or returning a terrible match
-    if highest_score < 30:
+    # Failsafe: If heuristic scoring found garbage or a non-legal URL, execute structural brute-force
+    url_is_legal = any(p in best_candidate.lower() for p in priority_keywords) if best_candidate else False
+    if not best_candidate or (highest_score < 60 and not url_is_legal):
+        COMMON_POLICY_PATHS = [
+            "/us/legal/privacy-policy/", "/legal/privacy-policy/", "/privacy/", "/privacy-policy/", 
+            "/legal/privacy/", "/en/privacy/", "/en-us/privacy/", "/policies/privacy/", "/about/privacy/"
+        ]
+        
+        parsed_base = urlparse(base_url)
+        domain_parts = parsed_base.netloc.split(".")
+        if len(domain_parts) >= 2:
+            root_domain = ".".join(domain_parts[-2:])
+            fallback_base = f"{parsed_base.scheme}://www.{root_domain}"
+        else:
+            fallback_base = base_url
+            
+        for path in COMMON_POLICY_PATHS:
+            test_url = urljoin(fallback_base, path)
+            try:
+                test_resp = requests.get(test_url, headers=headers, timeout=5, allow_redirects=True)
+                if test_resp.status_code == 200:
+                    text_lower = test_resp.text.lower()
+                    if len(text_lower) > 2000 and ("privacy" in text_lower or "policy" in text_lower):
+                        return test_resp.url
+            except Exception:
+                continue
+                
         return None
         
     return best_candidate
@@ -219,6 +278,19 @@ def scan_privacy_policy(base_url: str) -> dict:
         try:
             response = requests.get(privacy_url, headers=headers, timeout=8)
             response.raise_for_status()
+            
+            # Follow HTTP meta refresh redirects commonly utilized by enterprise firewalls (Google / Apple)
+            refresh_soup = BeautifulSoup(response.text, "html.parser")
+            meta_refresh = refresh_soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
+            if meta_refresh and "content" in meta_refresh.attrs:
+                content_attr = meta_refresh["content"]
+                if "url=" in content_attr.lower():
+                    redirect_url = content_attr.lower().split("url=")[-1].strip(" '\"")
+                    if not redirect_url.startswith("http"):
+                        redirect_url = urljoin(privacy_url, redirect_url)
+                    response = requests.get(redirect_url, headers=headers, timeout=8)
+                    response.raise_for_status()
+                
         except requests.RequestException as e:
             return {
                 "privacy_url": privacy_url,
@@ -235,6 +307,33 @@ def scan_privacy_policy(base_url: str) -> dict:
             script.extract()
             
         text = soup.get_text(separator=" ", strip=True)
+        
+        # Enterprise Portal Heuristic: If text is suspiciously short, attempt localization index traversal
+        if len(text) < 2000:
+            for locale in ["en-us", "en-ww", "english"]:
+                try:
+                    redirect_url = urljoin(privacy_url, f"{locale}/")
+                    locale_resp = requests.get(redirect_url, headers=headers, timeout=5)
+                    if locale_resp.status_code == 200:
+                        locale_soup = BeautifulSoup(locale_resp.text, "html.parser")
+                        for script in locale_soup(["script", "style", "nav", "footer", "header"]):
+                            script.extract()
+                        locale_text = locale_soup.get_text(separator=" ", strip=True)
+                        if len(locale_text) > 2000:
+                            text = locale_text
+                            privacy_url = redirect_url
+                            break
+                except:
+                    continue
+                    
+        # Single Page App & Thin Content Bypass utilizing Jina AI Reader API
+        if is_spa(response.text) or len(text) < 500:
+            try:
+                jina_resp = requests.get(f"{JINA_BASE_URL}{privacy_url}", headers={"User-Agent": "Mozilla/5.0", "Accept": "text/plain"}, timeout=15)
+                if jina_resp.status_code == 200 and len(jina_resp.text) > 500:
+                    text = jina_resp.text
+            except Exception:
+                pass
         chunks = split_into_chunks(text, chunk_size=150)
         
         if not chunks:

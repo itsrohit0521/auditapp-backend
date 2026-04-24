@@ -64,7 +64,7 @@ def scan_security_headers(url):
         # Base check 2: Cookie Security
         set_cookie = response_headers.get("Set-Cookie", "")
         if set_cookie:
-            if "Secure" in set_cookie and "HttpOnly" in set_cookie:
+            if "secure" in set_cookie.lower() and "httponly" in set_cookie.lower():
                 detected.append("Secure Cookies")
                 score += 10
             else:
