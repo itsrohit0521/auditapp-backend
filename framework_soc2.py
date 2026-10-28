@@ -1,33 +1,33 @@
 SOC2_CONTROLS = {
 
-    "encryption": {
-        "description": "Is sensitive customer data encrypted?",
+    "security": {
+        "description": "Are systems protected against unauthorized access (logical and physical)?",
         "risk_weight": 20,
-        "recommendation": "Use strong encryption standards such as AES-256 for data storage and TLS for transmission."
+        "recommendation": "Implement firewalls, intrusion detection, MFA, and physical access controls."
     },
 
-    "breach_response": {
-        "description": "Do you have a formal incident response process?",
+    "availability": {
+        "description": "Are systems available for operation and use as agreed or committed?",
         "risk_weight": 20,
-        "recommendation": "Implement a documented incident response and breach management procedure."
+        "recommendation": "Define and monitor SLAs, implement redundancy and failover mechanisms."
     },
 
-    "backups": {
-        "description": "Are secure data backups performed regularly?",
+    "processing_integrity": {
+        "description": "Is system processing complete, valid, accurate, timely, and authorized?",
         "risk_weight": 20,
-        "recommendation": "Implement automated backups and disaster recovery testing."
+        "recommendation": "Implement input validation, error handling, and transaction monitoring."
     },
 
-    "access_control": {
-        "description": "Do you restrict system access using role-based access control?",
+    "confidentiality": {
+        "description": "Is information designated as confidential protected as agreed?",
         "risk_weight": 20,
-        "recommendation": "Enforce RBAC and least-privilege access policies."
+        "recommendation": "Apply data classification policies and enforce encryption for confidential data."
     },
 
-    "activity_logging": {
-        "description": "Do you log and monitor system activity for security events?",
+    "privacy": {
+        "description": "Is personal information collected, used, retained, and disclosed in accordance with your privacy notice?",
         "risk_weight": 20,
-        "recommendation": "Implement centralized logging and continuous monitoring for suspicious activity."
+        "recommendation": "Establish a privacy program aligned with your privacy notice and applicable laws."
     }
 
 }
